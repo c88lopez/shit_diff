@@ -6,16 +6,14 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 
-	"os"
-
 	"io/ioutil"
 
 	"encoding/json"
 
 	"encoding/csv"
-
 	"fmt"
 	"io"
+	"os"
 
 	"golang.org/x/net/publicsuffix"
 )
@@ -25,6 +23,7 @@ var clientStage http.Client
 
 var configParameters configJson
 
+var results [2]string
 var rows [][]string
 
 func main() {
@@ -34,16 +33,16 @@ func main() {
 	bootstrap()
 
 	log.Println("Login to production...")
-	if err := login(&clientProduction, 0); nil != err {
+	if err := login(0); nil != err {
 		log.Fatal(err)
 	}
-	defer logout(&clientProduction, 1)
+	defer logout(0)
 
 	log.Println("Login to stage...")
-	if err := login(&clientStage, 1); nil != err {
+	if err := login(1); nil != err {
 		log.Fatal(err)
 	}
-	defer logout(&clientStage, 1)
+	defer logout(1)
 
 	log.Println("Creating results file...")
 	resultsFile, err := os.Create(configParameters.Results)
@@ -88,74 +87,99 @@ func bootstrap() {
 	}
 }
 
-func login(c *http.Client, environment int) error {
+func login(environment int) error {
 	var err error
+	//var resp *http.Response
 
 	options := cookiejar.Options{
 		PublicSuffixList: publicsuffix.List,
 	}
 
 	jar, err := cookiejar.New(&options)
-	if nil == err {
-		loginUrl := new(url.URL)
-		loginUrl.Scheme = "http"
-		loginUrl.Host = configParameters.Domains[environment]
-		loginUrl.RawPath = configParameters.Login.Endpoint
+	if nil != err {
+		return err
+	}
 
-		c = &http.Client{Jar: jar}
-		_, err = c.PostForm(loginUrl.String(), url.Values{
+	loginUrl := new(url.URL)
+	loginUrl.Scheme = "http"
+	loginUrl.Host = configParameters.Domains[environment]
+	loginUrl.Path = configParameters.Login.Endpoint
+
+	if 0 == environment {
+		clientProduction = http.Client{Jar: jar}
+		_, err = clientProduction.PostForm(loginUrl.String(), url.Values{
 			configParameters.Login.Fields.getUsernameField(): {
 				configParameters.Login.Fields.getUsernameValue()},
 			configParameters.Login.Fields.getPasswordField(): {
 				configParameters.Login.Fields.getPasswordValue()},
 		})
+
+		if nil != err {
+			log.Fatal(err)
+		}
+	} else {
+		clientStage = http.Client{Jar: jar}
+		_, err = clientStage.PostForm(loginUrl.String(), url.Values{
+			configParameters.Login.Fields.getUsernameField(): {
+				configParameters.Login.Fields.getUsernameValue()},
+			configParameters.Login.Fields.getPasswordField(): {
+				configParameters.Login.Fields.getPasswordValue()},
+		})
+
+		if nil != err {
+			log.Fatal(err)
+		}
 	}
 
 	return err
 }
 
-func logout(c *http.Client, environment int) error {
+func logout(environment int) error {
 	var err error
 
-	options := cookiejar.Options{
-		PublicSuffixList: publicsuffix.List,
-	}
-
-	jar, err := cookiejar.New(&options)
 	if nil == err {
 		logoutUrl := new(url.URL)
 		logoutUrl.Scheme = "http"
 		logoutUrl.Host = configParameters.Domains[environment]
 		logoutUrl.Path = configParameters.Login.Endpoint
 
-		c = &http.Client{Jar: jar}
-		_, err = c.PostForm(logoutUrl.String(), url.Values{})
+		if 0 == environment {
+			_, err = clientProduction.PostForm(logoutUrl.String(), url.Values{})
+		} else {
+			_, err = clientStage.PostForm(logoutUrl.String(), url.Values{})
+		}
 	}
 
 	return err
 }
 
 func diffEndpoint(endpoint string) {
-	templateUrl := new(url.URL)
+	urlTool := new(url.URL)
 
-	templateUrl.Scheme = "http"
-	templateUrl.RawPath = endpoint
+	fullUrl, err := urlTool.Parse("http://" + configParameters.Domains[0] + "/" + endpoint)
+	if nil != err {
+		log.Fatal(err)
+	}
 
-	templateUrl.Host = configParameters.Domains[0]
-
-	log.Printf("url: %s", endpoint)
-	respPrd, err := clientProduction.Get(templateUrl.String())
+	respPrd, err := clientProduction.Get(fullUrl.String())
 	if nil != err {
 		log.Println("Error: ", err)
 	} else {
-		templateUrl.Host = configParameters.Domains[1]
+		fullUrl.Host = configParameters.Domains[1]
 
-		respStg, err := clientProduction.Get(templateUrl.String())
+		respStg, err := clientStage.Get(fullUrl.String())
 		if nil != err {
 			log.Println("Error: ", err)
 		} else {
-			prdContent, _ := ioutil.ReadAll(respPrd.Body)
-			stgContent, _ := ioutil.ReadAll(respStg.Body)
+			prdContent, err := ioutil.ReadAll(respPrd.Body)
+			if nil != err {
+				log.Fatal(err)
+			}
+
+			stgContent, err := ioutil.ReadAll(respStg.Body)
+			if nil != err {
+				log.Fatal(err)
+			}
 
 			log.Printf("prd content: %s\n", prdContent)
 			log.Printf("stg content: %s\n", stgContent)
